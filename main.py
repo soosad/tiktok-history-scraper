@@ -1,6 +1,7 @@
 import os
 import re
 import time
+import sys
 import requests
 import yt_dlp
 
@@ -19,7 +20,7 @@ def clean_username(line):
 def load_streamers(filename):
     streamers = set()
     if not os.path.exists(filename):
-        print(f"❌ 找不到帳號清單檔案: {filename}")
+        print(f"❌ 找不到帳號清單檔案: {filename}", flush=True)
         return []
     
     with open(filename, "r", encoding="utf-8") as f:
@@ -71,7 +72,7 @@ def fetch_streamer_video_ids(streamer_id):
         ydl_opts['cookiefile'] = COOKIE_FILE
 
     video_ids = []
-    print(f"正在抓取 @{streamer_id} 的影片 ID...")
+    print(f"正在抓取 @{streamer_id} 的影片 ID...", flush=True)
 
     for profile_url in urls_to_try:
         if video_ids:
@@ -100,19 +101,19 @@ def fetch_streamer_video_ids(streamer_id):
         video_ids = fetch_via_proxitok(streamer_id)
 
     if video_ids:
-        print(f"✅ 成功取得 @{streamer_id} 共 {len(video_ids)} 個影片 ID。")
+        print(f"✅ 成功取得 @{streamer_id} 共 {len(video_ids)} 個影片 ID。", flush=True)
     else:
-        print(f"⚠️ 無法取得 @{streamer_id} 的影片 ID（該帳號可能不存在、無公開影片或被完全封鎖）。")
+        print(f"⚠️ 無法取得 @{streamer_id} 的影片 ID（該帳號可能不存在、無公開影片或被完全封鎖）。", flush=True)
 
     return video_ids
 
 def main():
     streamers = load_streamers(ACCOUNTS_FILE)
     if not streamers:
-        print("⚠️ 沒有載入任何有效的主播帳號。")
+        print("⚠️ 沒有載入任何有效的主播帳號。", flush=True)
         return
         
-    print(f"載入 {len(streamers)} 位主播帳號，開始處理...\n")
+    print(f"載入 {len(streamers)} 位主播帳號，開始處理...\n", flush=True)
     
     all_ids = []
     for streamer in streamers:
@@ -126,11 +127,7 @@ def main():
         for vid in all_ids:
             f.write(vid + "\n")
             
-    print(f"\n🎉 處理完成！共收集到 {len(all_ids)} 個不重複的影片 ID，已寫入 {OUTPUT_TXT}")
-
-if __name__ == "__main__":
-    main()
-    print(f"\n🎉 全部處理完成！共收集到 {len(all_ids)} 個不重複的影片 ID，已寫入 {OUTPUT_TXT}")
+    print(f"\n🎉 處理完成！共收集到 {len(all_ids)} 個不重複的影片 ID，已寫入 {OUTPUT_TXT}", flush=True)
 
 if __name__ == "__main__":
     main()
