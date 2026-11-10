@@ -50,7 +50,6 @@ def fetch_via_proxitok(streamer_id):
     return video_ids
 
 def fetch_streamer_video_ids(streamer_id):
-    # 同時嘗試不同的網址結構來避開 secondary ID 限制
     urls_to_try = [
         f"https://www.tiktok.com/@{streamer_id}",
         f"https://m.tiktok.com/h5/share/usr/{streamer_id}.html"
@@ -96,7 +95,6 @@ def fetch_streamer_video_ids(streamer_id):
             except Exception:
                 time.sleep(2)
 
-    # 如果 yt-dlp 雙重網址都失敗，啟動備用 API
     if not video_ids:
         video_ids = fetch_via_proxitok(streamer_id)
 
@@ -107,27 +105,66 @@ def fetch_streamer_video_ids(streamer_id):
 
     return video_ids
 
+def git_commit_and_push(streamer_id):
+    """將當前更新立即推回 GitHub 倉庫"""
+    print(f"🚀 正在將 @{streamer_id} 的更新推送至 GitHub 倉庫...", flush=True)
+    os.system('git config --global user.name "github-actions[bot]"')
+    os.system('git config --global user.email "github-actions[bot]@users.noreply.github.com"')
+    os.system(f'git add {OUTPUT_TXT}')
+    os.system(f'git commit -m "Auto-update: added new videos for @{streamer_id}"')
+    os.system('git push')
+    print(f"✅ @{streamer_id} 推送完成！\n", flush=True)
+
 def main():
     streamers = load_streamers(ACCOUNTS_FILE)
     if not streamers:
         print("⚠️ 沒有載入任何有效的主播帳號。", flush=True)
         return
         
-    print(f"載入 {len(streamers)} 位主播帳號，開始處理...\n", flush=True)
+    print(f"載入 {len(streamers)} 位主播帳號，開始逐一處理...\n", flush=True)
     
-    all_ids = []
+    # 1. 載入現有的歷史紀錄 (如果檔案存在)，用來做重複比對
+    existing_ids = set()
+    if os.path.exists(OUTPUT_TXT):
+        with open(OUTPUT_TXT, "r", encoding="utf-8") as f:
+            for line in f:
+                v_id = line.strip()
+                if v_id:
+                    existing_ids.add(v_id)
+        print(f"📂 已載入歷史紀錄，目前共有 {len(existing_ids)} 個已知影片 ID。\n", flush=True)
+
+    # 2. 逐一迴圈處理每位主播
     for streamer in streamers:
+        print(f"==============================", flush=True)
+        print(f"▶️ 開始處理主播: @{streamer}", flush=True)
+        print(f"==============================", flush=True)
+        
+        # 取得該主播目前的影片 ID
         ids = fetch_streamer_video_ids(streamer)
-        all_ids.extend(ids)
-        time.sleep(2)
-    
-    all_ids = list(dict.fromkeys(all_ids))
-    
-    with open(OUTPUT_TXT, "w", encoding="utf-8") as f:
-        for vid in all_ids:
-            f.write(vid + "\n")
+        
+        # 3. 比對歷史紀錄，過濾掉已經存在的不重複新 ID
+        new_ids = [v_id for v_id in ids if v_id not in existing_ids]
+        
+        if new_ids:
+            print(f"✨ 發現 @{streamer} 的全新影片 ID 共 {len(new_ids)} 個！", flush=True)
             
-    print(f"\n🎉 處理完成！共收集到 {len(all_ids)} 個不重複的影片 ID，已寫入 {OUTPUT_TXT}", flush=True)
+            # 加入全域歷史集合
+            existing_ids.update(new_ids)
+            
+            # 立即將完整的歷史清單寫回檔案
+            with open(OUTPUT_TXT, "w", encoding="utf-8") as f:
+                for vid in existing_ids:
+                    f.write(vid + "\n")
+            
+            # 立即執行 Git 提交並推回倉庫
+            git_commit_and_push(streamer)
+        else:
+            print(f"ℹ️ @{streamer} 沒有產生新的影片 ID（皆已存在）。\n", flush=True)
+        
+        # 主播與主播之間的緩衝休息，避免過於頻繁
+        time.sleep(3)
+
+    print(f"🎉 所有主播處理完畢！目前總共累積 {len(existing_ids)} 個不重複的影片 ID。", flush=True)
 
 if __name__ == "__main__":
     main()
