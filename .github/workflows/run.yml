@@ -2,19 +2,23 @@ name: Run TikTok History Scraper
 
 on:
   schedule:
-    - cron: '0 0 * * *'
-  workflow_dispatch: 
+    # 設定每 15 分鐘自動觸發一次 (註：GitHub 的 cron 時間為 UTC 格式)
+    - cron: '*/15 * * * *'
+  workflow_dispatch: # 允許你隨時手動點按鈕執行
 
 jobs:
   run-scraper:
     runs-on: ubuntu-latest
+    # 賦予 GitHub Actions 寫入倉庫的權限，以便執行 git push
+    permissions:
+      contents: write
 
     steps:
     - name: 1. 檢出程式碼
       uses: actions/checkout@v4
 
     - name: 2. 設定 Python 環境 (升級至 3.11)
-      uses: actions/setup-python@v5
+      uses: setup-python@v5
       with:
         python-version: '3.11'
 
@@ -32,7 +36,15 @@ jobs:
       run: |
         python main.py
 
-    - name: 6. 清理機密檔案
+    - name: 6. 自動 Commit 並上傳 all_historyvideos.txt 到倉庫
+      run: |
+        git config --global user.name "github-actions[bot]"
+        git config --global user.email "github-actions[bot]@users.noreply.github.com"
+        git add all_historyvideos.txt
+        git commit -m "Auto-update all_historyvideos.txt via GitHub Actions Cron" || echo "No changes to commit"
+        git push
+
+    - name: 7. 清理機密檔案
       if: always()
       run: |
         rm -f cookies.txt
