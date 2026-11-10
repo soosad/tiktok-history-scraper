@@ -2,8 +2,8 @@ name: Run TikTok History Scraper
 
 on:
   schedule:
-    # 設定每 15 分鐘自動觸發一次 (UTC 時間)
-    - cron: '*/15 * * * *'
+    # 設定每 6 小時自動觸發一次 (UTC 時間)
+    - cron: '0 */6 * * *'
   workflow_dispatch: # 允許你隨時手動點按鈕執行
 
 jobs:
