@@ -2,14 +2,13 @@ name: Run TikTok History Scraper
 
 on:
   schedule:
-    # 設定每 15 分鐘自動觸發一次 (註：GitHub 的 cron 時間為 UTC 格式)
+    # 設定每 15 分鐘自動觸發一次 (UTC 時間)
     - cron: '*/15 * * * *'
   workflow_dispatch: # 允許你隨時手動點按鈕執行
 
 jobs:
   run-scraper:
     runs-on: ubuntu-latest
-    # 賦予 GitHub Actions 寫入倉庫的權限，以便執行 git push
     permissions:
       contents: write
 
@@ -18,7 +17,7 @@ jobs:
       uses: actions/checkout@v4
 
     - name: 2. 設定 Python 環境 (升級至 3.11)
-      uses: setup-python@v5
+      uses: actions/setup-python@v5
       with:
         python-version: '3.11'
 
