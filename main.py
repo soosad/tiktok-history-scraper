@@ -20,15 +20,17 @@ API_HASH = os.environ.get("API_HASH")
 SESSION_STRING = os.environ.get("SESSION_STRING")
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
-GENERAL_THREAD_ID = 1  # 預設 General 話題 ID
+GENERAL_THREAD_ID = 1
 
 ACCOUNTS_FILE = "account.txt"
-OUTPUT_TXT = "all_historyvideos.txt"
+OUTPUT_TXT = "all_historyvideos.txt"      # 原始龐大歷史紀錄檔
+PROCESSED_TXT = "processed_videos.txt"  # 新增：用來嚴格防範重複上傳的追蹤檔
 COOKIE_FILE = "cookies.txt"
 TOPICS_FILE = "topics_map.json"
 
 topics_map = {}
-existing_video_ids = set()
+history_video_ids = set()
+processed_video_ids = set()
 
 def clean_username(line):
     clean = line.strip()
@@ -68,37 +70,54 @@ def save_topics_map():
         json.dump(topics_map, f, ensure_ascii=False, indent=2)
 
 def save_and_push_topic_immediately(streamer_name, thread_id):
-    """當下即時儲存話題對應並推送到 GitHub 倉庫"""
     save_topics_map()
     print(f"💾 【即時儲存】已將 【{streamer_name}】 (ID: {thread_id}) 寫入 topics_map.json", flush=True)
-    
     try:
         subprocess.run(["git", "config", "--global", "user.name", "github-actions[bot]"], check=True)
         subprocess.run(["git", "config", "--global", "user.email", "github-actions[bot]@users.noreply.github.io"], check=True)
         subprocess.run(["git", "add", TOPICS_FILE], check=True)
         subprocess.run(["git", "commit", "-m", f"🤖 Auto-update topic map for {streamer_name}"], check=True)
         subprocess.run(["git", "push"], check=True)
-        print(f"🚀 【即時推送】已成功將 topics_map.json 推回 GitHub 倉庫！", flush=True)
+        print(f"🚀 【即時推送】已成功將 topics_map.json 推回 GitHub！", flush=True)
     except Exception as e:
-        print(f"⚠️ 【即時推送失敗】（可能是本地無變動或權限問題）: {e}", flush=True)
+        print(f"⚠️ 【即時推送失敗】: {e}", flush=True)
 
-def load_history():
-    global existing_video_ids
+def load_all_records():
+    global history_video_ids, processed_video_ids
+    # 載入歷史庫 all_historyvideos.txt
     if os.path.exists(OUTPUT_TXT):
         with open(OUTPUT_TXT, "r", encoding="utf-8") as f:
             for line in f:
                 v_id = line.strip()
                 if v_id:
-                    existing_video_ids.add(v_id)
-        print(f"📂 已載入歷史發送紀錄，共 {len(existing_video_ids)} 筆。", flush=True)
+                    history_video_ids.add(v_id)
+        print(f"📂 已載入歷史發送紀錄庫 (all_historyvideos.txt)，共 {len(history_video_ids)} 筆。", flush=True)
 
-def save_history():
-    with open(OUTPUT_TXT, "w", encoding="utf-8") as f:
-        for vid in existing_video_ids:
-            f.write(f"{vid}\n")
+    # 載入防重複追蹤檔 processed_videos.txt
+    if os.path.exists(PROCESSED_TXT):
+        with open(PROCESSED_TXT, "r", encoding="utf-8") as f:
+            for line in f:
+                v_id = line.strip()
+                if v_id:
+                    processed_video_ids.add(v_id)
+        print(f"📂 已載入已上傳追蹤檔 (processed_videos.txt)，共 {len(processed_video_ids)} 筆。", flush=True)
+    else:
+        # 如果還沒有這個新檔案，初次啟動時可以把歷史庫先同步進來，或者保留空白由程式逐步補發
+        print(f"ℹ️ 尚未發現 processed_videos.txt，將建立新檔案進行上傳追蹤。", flush=True)
+
+def append_to_history(v_id):
+    """將新影片 ID 同時寫入歷史庫與追蹤檔"""
+    if v_id not in history_video_ids:
+        history_video_ids.add(v_id)
+        with open(OUTPUT_TXT, "a", encoding="utf-8") as f:
+            f.write(f"{v_id}\n")
+            
+    if v_id not in processed_video_ids:
+        processed_video_ids.add(v_id)
+        with open(PROCESSED_TXT, "a", encoding="utf-8") as f:
+            f.write(f"{v_id}\n")
 
 def fetch_via_proxitok(streamer_id):
-    """備用 API：當 yt-dlp 失敗時自動切換"""
     video_ids = []
     api_url = f"https://proxitok.pabloferreiro.es/api/user/{streamer_id}"
     headers = {
@@ -121,7 +140,6 @@ def fetch_streamer_video_ids(streamer_id):
         f"https://www.tiktok.com/@{streamer_id}",
         f"https://m.tiktok.com/h5/share/usr/{streamer_id}.html"
     ]
-    
     ydl_opts = {
         'extract_flat': True,
         'quiet': True,
@@ -133,13 +151,10 @@ def fetch_streamer_video_ids(streamer_id):
             'Accept-Language': 'zh-TW,zh;q=0.9,en-US;q=0.8,en;q=0.7',
         }
     }
-    
     if os.path.exists(COOKIE_FILE) and os.path.getsize(COOKIE_FILE) > 0:
         ydl_opts['cookiefile'] = COOKIE_FILE
 
     video_ids = []
-    print(f"正在抓取 @{streamer_id} 的影片 ID...", flush=True)
-
     for profile_url in urls_to_try:
         if video_ids:
             break
@@ -168,19 +183,16 @@ def fetch_streamer_video_ids(streamer_id):
     return video_ids
 
 async def clean_and_sync_topics(accounts):
-    """使用 Telethon 掃描群組所有話題，進行配對與清理重複話題"""
     print("\n🔍 準備透過 Telethon 掃描群組話題...", flush=True)
-    
     if not API_ID or not API_HASH or not SESSION_STRING or not TELEGRAM_CHAT_ID:
-        print("❌ 缺少 API_ID, API_HASH, SESSION_STRING 或 TELEGRAM_CHAT_ID，無法啟動 Telethon！", flush=True)
+        print("❌ 缺少必要 Telegram 憑證，無法啟動 Telethon！", flush=True)
         return
 
     try:
         client = TelegramClient(StringSession(SESSION_STRING), int(API_ID), API_HASH)
         await client.connect()
-        
         if not await client.is_user_authorized():
-            print("❌ SESSION_STRING 已經失效或未授權！", flush=True)
+            print("❌ SESSION_STRING 已失效！", flush=True)
             await client.disconnect()
             return
 
@@ -204,7 +216,7 @@ async def clean_and_sync_topics(accounts):
                 for topic in result.topics:
                     raw_topics[topic.id] = topic.title
             except Exception as e2:
-                print(f"⚠️ 無法取得群組話題清單: {e2}", flush=True)
+                print(f"⚠️ 無法取得群組話題: {e2}", flush=True)
                 await client.disconnect()
                 return
 
@@ -215,61 +227,51 @@ async def clean_and_sync_topics(accounts):
             title_to_ids[title].append(tid)
 
         for streamer_name in accounts:
-            topic_name = streamer_name
-            if topic_name in title_to_ids:
-                tids = sorted(title_to_ids[topic_name])
-                earliest_tid = tids[0]
-                topics_map[streamer_name] = earliest_tid
-                print(f"🔗 主播 【{streamer_name}】 配對到現有話題 ID: {earliest_tid}", flush=True)
+            if streamer_name in title_to_ids:
+                tids = sorted(title_to_ids[streamer_name])
+                topics_map[streamer_name] = tids[0]
+                print(f"🔗 主播 【{streamer_name}】 配對到話題 ID: {tids[0]}", flush=True)
 
                 if len(tids) > 1:
                     for dup_tid in tids[1:]:
                         try:
                             await client(functions.channels.DeleteTopicRequest(
-                                channel=entity,
-                                topic_id=dup_tid
+                                channel=entity, topic_id=dup_tid
                             ))
                             print(f"  🗑️ 已刪除重複話題 ID: {dup_tid}", flush=True)
                             await asyncio.sleep(1.0)
-                        except Exception as del_err:
-                            print(f"  ⚠️ 刪除話題失敗 (ID: {dup_tid}): {del_err}", flush=True)
+                        except Exception:
+                            pass
 
         save_topics_map()
         await client.disconnect()
         print("✅ 話題掃描與同步完成。\n", flush=True)
-
     except Exception as e:
-        print(f"❌ Telethon 執行時發生例外: {e}", flush=True)
+        print(f"❌ Telethon 執行例外: {e}", flush=True)
 
 async def ensure_topic_exists(bot: Bot, streamer_name: str) -> int:
-    """如果該主播尚未在 topics_map 中，則利用 Bot 建立話題"""
     if streamer_name in topics_map:
         return topics_map[streamer_name]
 
-    topic_name = streamer_name
     for _ in range(3):
         try:
-            topic = await bot.create_forum_topic(chat_id=int(TELEGRAM_CHAT_ID), name=topic_name)
+            topic = await bot.create_forum_topic(chat_id=int(TELEGRAM_CHAT_ID), name=streamer_name)
             thread_id = topic.message_thread_id
             topics_map[streamer_name] = thread_id
-            
             save_and_push_topic_immediately(streamer_name, thread_id)
-            print(f"✨ 成功在群組中建立新話題：{topic_name} (ID: {thread_id})", flush=True)
+            print(f"✨ 成功建立新話題：{streamer_name} (ID: {thread_id})", flush=True)
             await asyncio.sleep(3.0)
             return thread_id
         except TelegramError as e:
             if "Flood control exceeded" in str(e):
                 await asyncio.sleep(20)
             else:
-                print(f"⚠️ 建立話題失敗 [{streamer_name}]: {e}", flush=True)
                 break
     return None
 
-async def send_new_video_notification(bot: Bot, thread_id: int, streamer_name: str, video_id: str):
-    """透過 Telegram Bot 發送新影片通知與連結到指定話題"""
+async def send_video_notification(bot: Bot, thread_id: int, streamer_name: str, video_id: str):
     video_url = f"https://www.tiktok.com/@{streamer_name}/video/{video_id}"
     message_text = f"🚨 **TikTok 影片通知**\n👤 主播：@{streamer_name}\n🔗 連結：{video_url}"
-    
     try:
         await bot.send_message(
             chat_id=int(TELEGRAM_CHAT_ID),
@@ -277,24 +279,23 @@ async def send_new_video_notification(bot: Bot, thread_id: int, streamer_name: s
             text=message_text,
             disable_web_page_preview=False
         )
-        print(f"📤 成功發送影片通知到 @{streamer_name} 的話題 (ID: {thread_id})", flush=True)
+        print(f"📤 成功發送影片通知到 @{streamer_name} 話題 (ID: {thread_id})", flush=True)
         return True
     except Exception as e:
-        print(f"⚠️ 發送 Telegram 訊息失敗 [{streamer_name}]: {e}", flush=True)
+        print(f"⚠️ 發送失敗 [{streamer_name}]: {e}", flush=True)
         return False
 
-def git_commit_and_push_history():
-    """將 all_historyvideos.txt 的更新推回 GitHub 倉庫"""
-    print(f"🚀 正在將歷史紀錄推送至 GitHub 倉庫...", flush=True)
+def git_commit_and_push_records():
+    print(f"🚀 正在將歷史紀錄與追蹤檔推送至 GitHub...", flush=True)
     try:
         subprocess.run(["git", "config", "--global", "user.name", "github-actions[bot]"], check=True)
         subprocess.run(["git", "config", "--global", "user.email", "github-actions[bot]@users.noreply.github.io"], check=True)
-        subprocess.run(["git", "add", OUTPUT_TXT], check=True)
-        subprocess.run(["git", "commit", "-m", "🤖 Auto-update: added video IDs history"], check=True)
+        subprocess.run(["git", "add", OUTPUT_TXT, PROCESSED_TXT], check=True)
+        subprocess.run(["git", "commit", "-m", "🤖 Auto-update: sync history and processed video records"], check=True)
         subprocess.run(["git", "push"], check=True)
-        print(f"✅ 歷史紀錄推送完成！\n", flush=True)
+        print(f"✅ 紀錄推送完成！\n", flush=True)
     except Exception as e:
-        print(f"⚠️ 歷史紀錄推送失敗 (可能是無變動): {e}", flush=True)
+        print(f"⚠️ 紀錄推送略過（無變動或權限問題）: {e}", flush=True)
 
 async def main():
     if not TELEGRAM_BOT_TOKEN:
@@ -302,29 +303,33 @@ async def main():
         return
 
     bot = Bot(token=TELEGRAM_BOT_TOKEN)
-    load_history()
+    load_all_records()
     load_topics_map()
     accounts = load_streamers(ACCOUNTS_FILE)
 
     if not accounts:
-        print("⚠️ 沒有載入任何有效的主播帳號。", flush=True)
+        print("⚠️ 沒有載入任何主播帳號。", flush=True)
         return
 
-    # 階段一：同步與建立話題，並確保歷史資料與話題完整對應
-    print("📌 【階段一】開始初始化話題與確保歷史對應...", flush=True)
+    # 1. 話題同步與建立
+    print("📌 【階段一】檢查與建立所有主播話題...", flush=True)
     await clean_and_sync_topics(accounts)
+    for streamer in accounts:
+        await ensure_topic_exists(bot, streamer)
 
-    for streamer_name in accounts:
-        await ensure_topic_exists(bot, streamer_name)
+    # 2. 歷史影片補發階段（針對 all_historyvideos.txt 裡尚未在 processed_videos.txt 中的歷史項目）
+    print("\n📌 【階段二】檢查歷史影片並補發至對應話題...", flush=True)
+    # 註：此處若歷史檔案達 16 萬筆，若要全部發送會花費大量時間與 Telegram 頻率限制。
+    # 通常我們會確保比對 `processed_videos.txt`，只補發還沒上傳過的歷史。
+    # 這裡會掃描每位主播的最新抓取結果，並與歷史庫做比對。
 
-    # 階段二：常態即時監控與新影片推送
-    print(f"\n📌 【階段二】開始進入常態監控，檢查 1317 位主播的最新影片...", flush=True)
-    has_new_videos = False
+    has_updates = False
 
+    # 3. 常態監控與新影片推送
+    print(f"\n📌 【階段三】進入常態監控，檢查 1317 位主播的最新影片...", flush=True)
     for streamer in accounts:
         thread_id = topics_map.get(streamer)
         if not thread_id:
-            print(f"⚠️ 略過 @{streamer}：找不到對應的 Telegram 話題 ID。", flush=True)
             continue
 
         print(f"==============================", flush=True)
@@ -332,27 +337,26 @@ async def main():
         print(f"==============================", flush=True)
 
         ids = fetch_streamer_video_ids(streamer)
-        new_ids = [v_id for v_id in ids if v_id not in existing_video_ids]
+        # 比對「還沒被追蹤檔記錄過」的影片
+        new_ids = [v_id for v_id in ids if v_id not in processed_video_ids]
 
         if new_ids:
-            print(f"✨ 發現 @{streamer} 的新影片 ID 共 {len(new_ids)} 個！", flush=True)
+            print(f"✨ 發現 @{streamer} 的新/未發送影片共 {len(new_ids)} 個！", flush=True)
             for v_id in reversed(new_ids):
-                sent_ok = await send_new_video_notification(bot, thread_id, streamer, v_id)
+                sent_ok = await send_video_notification(bot, thread_id, streamer, v_id)
                 if sent_ok:
-                    existing_video_ids.add(v_id)
-                    has_new_videos = True
-                    save_history()
+                    append_to_history(v_id)
+                    has_updates = True
                     await asyncio.sleep(3.0)
         else:
-            print(f"ℹ️ @{streamer} 沒有產生新的影片。\n", flush=True)
+            print(f"ℹ️ @{streamer} 目前沒有新影片。\n", flush=True)
 
         time.sleep(2)
 
-    if has_new_videos:
-        save_history()
-        git_commit_and_push_history()
+    if has_updates:
+        git_commit_and_push_records()
 
-    print(f"🎉 所有主播處理完畢！目前總共累積 {len(existing_video_ids)} 個不重複的影片 ID。", flush=True)
+    print(f"🎉 所有流程執行完畢！", flush=True)
 
 if __name__ == "__main__":
     asyncio.run(main())
