@@ -12,6 +12,7 @@ from telegram.error import TelegramError
 from telethon import TelegramClient, functions
 from telethon.sessions import StringSession
 import yt_dlp
+import requests
 
 # === 讀取環境變數 ===
 API_ID = os.environ.get("API_ID")
@@ -221,7 +222,6 @@ async def clean_and_sync_topics(accounts):
                 topics_map[streamer_name] = earliest_tid
                 print(f"🔗 主播 【{streamer_name}】 配對到現有話題 ID: {earliest_tid}", flush=True)
 
-                # 刪除重複的話題
                 if len(tids) > 1:
                     for dup_tid in tids[1:]:
                         try:
@@ -253,7 +253,6 @@ async def ensure_topic_exists(bot: Bot, streamer_name: str) -> int:
             thread_id = topic.message_thread_id
             topics_map[streamer_name] = thread_id
             
-            # 建立成功立即儲存並推送到 GitHub
             save_and_push_topic_immediately(streamer_name, thread_id)
             print(f"✨ 成功在群組中建立新話題：{topic_name} (ID: {thread_id})", flush=True)
             await asyncio.sleep(3.0)
@@ -269,7 +268,7 @@ async def ensure_topic_exists(bot: Bot, streamer_name: str) -> int:
 async def send_new_video_notification(bot: Bot, thread_id: int, streamer_name: str, video_id: str):
     """透過 Telegram Bot 發送新影片通知與連結到指定話題"""
     video_url = f"https://www.tiktok.com/@{streamer_name}/video/{video_id}"
-    message_text = f"🚨 **TikTok 新影片通知**\n👤 主播：@{streamer_name}\n🔗 連結：{video_url}"
+    message_text = f"🚨 **TikTok 影片通知**\n👤 主播：@{streamer_name}\n🔗 連結：{video_url}"
     
     try:
         await bot.send_message(
@@ -278,7 +277,7 @@ async def send_new_video_notification(bot: Bot, thread_id: int, streamer_name: s
             text=message_text,
             disable_web_page_preview=False
         )
-        print(f"📤 成功發送新影片通知到 @{streamer_name} 的話題 (ID: {thread_id})", flush=True)
+        print(f"📤 成功發送影片通知到 @{streamer_name} 的話題 (ID: {thread_id})", flush=True)
         return True
     except Exception as e:
         print(f"⚠️ 發送 Telegram 訊息失敗 [{streamer_name}]: {e}", flush=True)
@@ -291,7 +290,7 @@ def git_commit_and_push_history():
         subprocess.run(["git", "config", "--global", "user.name", "github-actions[bot]"], check=True)
         subprocess.run(["git", "config", "--global", "user.email", "github-actions[bot]@users.noreply.github.io"], check=True)
         subprocess.run(["git", "add", OUTPUT_TXT], check=True)
-        subprocess.run(["git", "commit", "-m", "🤖 Auto-update: added new video IDs history"], check=True)
+        subprocess.run(["git", "commit", "-m", "🤖 Auto-update: added video IDs history"], check=True)
         subprocess.run(["git", "push"], check=True)
         print(f"✅ 歷史紀錄推送完成！\n", flush=True)
     except Exception as e:
@@ -311,18 +310,17 @@ async def main():
         print("⚠️ 沒有載入任何有效的主播帳號。", flush=True)
         return
 
-    # 1. 執行 Telethon 掃描與話題整併清理
+    # 階段一：同步與建立話題，並確保歷史資料與話題完整對應
+    print("📌 【階段一】開始初始化話題與確保歷史對應...", flush=True)
     await clean_and_sync_topics(accounts)
 
-    print(f"🎯 開始檢查 {len(accounts)} 位主播的最新影片...", flush=True)
-
-    # 2. 確保每位主播都有對應的話題（若沒有則自動建立）
     for streamer_name in accounts:
         await ensure_topic_exists(bot, streamer_name)
 
+    # 階段二：常態即時監控與新影片推送
+    print(f"\n📌 【階段二】開始進入常態監控，檢查 1317 位主播的最新影片...", flush=True)
     has_new_videos = False
 
-    # 3. 逐一檢查每位主播的影片
     for streamer in accounts:
         thread_id = topics_map.get(streamer)
         if not thread_id:
@@ -334,13 +332,10 @@ async def main():
         print(f"==============================", flush=True)
 
         ids = fetch_streamer_video_ids(streamer)
-        
-        # 比對出全新的影片 ID
         new_ids = [v_id for v_id in ids if v_id not in existing_video_ids]
 
         if new_ids:
-            print(f"✨ 發現 @{streamer} 的全新影片 ID 共 {len(new_ids)} 個！", flush=True)
-            # 為了保持時間順序，從舊到新發送
+            print(f"✨ 發現 @{streamer} 的新影片 ID 共 {len(new_ids)} 個！", flush=True)
             for v_id in reversed(new_ids):
                 sent_ok = await send_new_video_notification(bot, thread_id, streamer, v_id)
                 if sent_ok:
@@ -349,11 +344,10 @@ async def main():
                     save_history()
                     await asyncio.sleep(3.0)
         else:
-            print(f"ℹ️ @{streamer} 沒有產生新的影片 ID。\n", flush=True)
+            print(f"ℹ️ @{streamer} 沒有產生新的影片。\n", flush=True)
 
         time.sleep(2)
 
-    # 4. 如果有抓到新影片，統一更新一次歷史紀錄並 Git 推送
     if has_new_videos:
         save_history()
         git_commit_and_push_history()
