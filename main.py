@@ -23,8 +23,8 @@ TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 GENERAL_THREAD_ID = 1
 
 ACCOUNTS_FILE = "account.txt"
-OUTPUT_TXT = "all_historyvideos.txt"      # 原始龐大歷史紀錄庫
-PROCESSED_TXT = "processed_videos.txt"  # 追蹤已上傳成功的影片 ID（防止重複）
+OUTPUT_TXT = "all_historyvideos.txt"      
+PROCESSED_TXT = "processed_videos.txt"  
 COOKIE_FILE = "cookies.txt"
 TOPICS_FILE = "topics_map.json"
 
@@ -84,7 +84,6 @@ def save_and_push_topic_immediately(streamer_name, thread_id):
 
 def load_all_records():
     global history_video_ids, processed_video_ids
-    # 載入歷史庫
     if os.path.exists(OUTPUT_TXT):
         with open(OUTPUT_TXT, "r", encoding="utf-8") as f:
             for line in f:
@@ -93,7 +92,6 @@ def load_all_records():
                     history_video_ids.add(v_id)
         print(f"📂 已載入歷史發送紀錄庫 (all_historyvideos.txt)，共 {len(history_video_ids)} 筆。", flush=True)
 
-    # 載入已上傳追蹤檔
     if os.path.exists(PROCESSED_TXT):
         with open(PROCESSED_TXT, "r", encoding="utf-8") as f:
             for line in f:
@@ -103,7 +101,6 @@ def load_all_records():
         print(f"📂 已載入已上傳追蹤檔 (processed_videos.txt)，共 {len(processed_video_ids)} 筆已上傳。", flush=True)
 
 def append_to_processed(v_id):
-    """每上傳成功一部影片，立刻寫入歷史庫與追蹤檔"""
     if v_id not in history_video_ids:
         history_video_ids.add(v_id)
         with open(OUTPUT_TXT, "a", encoding="utf-8") as f:
@@ -157,63 +154,8 @@ def fetch_streamer_video_ids(streamer_id):
                 time.sleep(2)
     return video_ids
 
-async def clean_and_sync_topics(accounts):
-    print("\n🔍 準備透過 Telethon 掃描群組話題...", flush=True)
-    if not API_ID or not API_HASH or not SESSION_STRING or not TELEGRAM_CHAT_ID:
-        return
-
-    try:
-        client = TelegramClient(StringSession(SESSION_STRING), int(API_ID), API_HASH)
-        await client.connect()
-        if not await client.is_user_authorized():
-            await client.disconnect()
-            return
-
-        chat_id_int = int(TELEGRAM_CHAT_ID)
-        entity = await client.get_entity(chat_id_int)
-        
-        raw_topics = {}
-        try:
-            from telethon.tl.functions.messages import GetForumTopicsRequest
-            result = await client(GetForumTopicsRequest(peer=entity, offset_date=0, offset_id=0, offset_topic=0, limit=100))
-            for topic in result.topics:
-                raw_topics[topic.id] = topic.title
-        except Exception:
-            try:
-                from telethon.tl.functions.channels import GetForumTopicsRequest
-                result = await client(GetForumTopicsRequest(channel=entity, offset_date=0, offset_id=0, offset_topic=0, limit=100))
-                for topic in result.topics:
-                    raw_topics[topic.id] = topic.title
-            except Exception:
-                await client.disconnect()
-                return
-
-        title_to_ids = {}
-        for tid, title in raw_topics.items():
-            if title not in title_to_ids:
-                title_to_ids[title] = []
-            title_to_ids[title].append(tid)
-
-        for streamer_name in accounts:
-            if streamer_name in title_to_ids:
-                tids = sorted(title_to_ids[streamer_name])
-                topics_map[streamer_name] = tids[0]
-
-                if len(tids) > 1:
-                    for dup_tid in tids[1:]:
-                        try:
-                            await client(functions.channels.DeleteTopicRequest(channel=entity, topic_id=dup_tid))
-                            await asyncio.sleep(1.0)
-                        except Exception:
-                            pass
-
-        save_topics_map()
-        await client.disconnect()
-        print("✅ 話題掃描與同步完成。\n", flush=True)
-    except Exception as e:
-        print(f"❌ Telethon 執行例外: {e}", flush=True)
-
 async def ensure_topic_exists(bot: Bot, streamer_name: str) -> int:
+    """確保該主播在 Telegram 中擁有話題，沒有的話就主動建立"""
     if streamer_name in topics_map:
         return topics_map[streamer_name]
 
@@ -223,17 +165,18 @@ async def ensure_topic_exists(bot: Bot, streamer_name: str) -> int:
             thread_id = topic.message_thread_id
             topics_map[streamer_name] = thread_id
             save_and_push_topic_immediately(streamer_name, thread_id)
+            print(f"✨ 成功在新群組建立話題: 【{streamer_name}】 (ID: {thread_id})", flush=True)
             await asyncio.sleep(3.0)
             return thread_id
         except TelegramError as e:
             if "Flood control exceeded" in str(e):
                 await asyncio.sleep(20)
             else:
+                print(f"⚠️ 建立話題失敗 [{streamer_name}]: {e}", flush=True)
                 break
     return None
 
 async def download_and_send_video(bot: Bot, thread_id: int, streamer_name: str, video_id: str):
-    """下載 TikTok 影片檔案並直接上傳到 Telegram 話題中（包含影片標題）"""
     video_url = f"https://www.tiktok.com/@{streamer_name}/video/{video_id}"
     output_template = f"temp_{video_id}.mp4"
     
@@ -307,23 +250,16 @@ async def main():
     if not accounts:
         return
 
-    # 1. 話題同步與建立
-    await clean_and_sync_topics(accounts)
-    for streamer in accounts:
-        await ensure_topic_exists(bot, streamer)
-
-    # 2. 全面巡檢 1317 位主播：自動補發歷史未上傳的影片 + 監控新影片
-    print(f"\n📌 開始全面巡檢 1,317 位主播（歷史補發 + 即時監控）...", flush=True)
+    print(f"\n📌 開始檢查並建立 1,317 位主播的話題與影片同步...", flush=True)
     
     for streamer in accounts:
-        thread_id = topics_map.get(streamer)
+        thread_id = await ensure_topic_exists(bot, streamer)
         if not thread_id:
             continue
 
-        print(f"▶️ 檢查主播: @{streamer}", flush=True)
+        print(f"▶️ 檢查主播: @{streamer} (話題 ID: {thread_id})", flush=True)
         ids = fetch_streamer_video_ids(streamer)
         
-        # 找出所有「還沒被 processed_videos.txt 記錄過」的影片
         unprocessed_ids = [v_id for v_id in ids if v_id not in processed_video_ids]
 
         if unprocessed_ids:
@@ -331,16 +267,15 @@ async def main():
             for v_id in reversed(unprocessed_ids):
                 success = await download_and_send_video(bot, thread_id, streamer, v_id)
                 if success:
-                    # 每成功上傳一部，立刻寫入 txt 並推送到 Git
                     append_to_processed(v_id)
                     git_commit_and_push_records()
                     await asyncio.sleep(3.0)
         else:
-            print(f"ℹ️ @{streamer} 沒有需要補發或上傳的新影片。\n", flush=True)
+            print(f"ℹ️ @{streamer} 目前沒有需要上傳的新影片。\n", flush=True)
 
         time.sleep(2)
 
-    print(f"🎉 所有主播的歷史與新影片同步流程執行完畢！", flush=True)
+    print(f"🎉 所有主播的群組話題與影片同步流程執行完畢！", flush=True)
 
 if __name__ == "__main__":
     asyncio.run(main())
