@@ -233,7 +233,7 @@ async def ensure_topic_exists(bot: Bot, streamer_name: str) -> int:
     return None
 
 async def download_and_send_video(bot: Bot, thread_id: int, streamer_name: str, video_id: str):
-    """下載 TikTok 影片檔案並直接上傳到 Telegram 話題中"""
+    """下載 TikTok 影片檔案並直接上傳到 Telegram 話題中（包含影片標題）"""
     video_url = f"https://www.tiktok.com/@{streamer_name}/video/{video_id}"
     output_template = f"temp_{video_id}.mp4"
     
@@ -247,13 +247,23 @@ async def download_and_send_video(bot: Bot, thread_id: int, streamer_name: str, 
         ydl_opts['cookiefile'] = COOKIE_FILE
 
     downloaded_file = None
+    video_title = "無標題"
+    
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            ydl.download([video_url])
+            info = ydl.extract_info(video_url, download=True)
+            if info and 'title' in info:
+                video_title = info.get('title', '').strip()
             
         if os.path.exists(output_template):
             downloaded_file = output_template
-            caption = f"🚨 **TikTok 影片通知**\n👤 主播：@{streamer_name}\n🔗 原始連結：{video_url}"
+            
+            caption = (
+                f"🚨 **TikTok 影片通知**\n"
+                f"👤 主播：@{streamer_name}\n"
+                f"📝 標題：{video_title}\n"
+                f"🔗 連結：{video_url}"
+            )
             
             with open(downloaded_file, 'rb') as video_file:
                 await bot.send_video(
@@ -302,21 +312,8 @@ async def main():
     for streamer in accounts:
         await ensure_topic_exists(bot, streamer)
 
-    # 2. 【階段一】先把 all_historyvideos.txt 裡記錄的歷史影片下載並上傳到對應話題
-    print(f"\n📌 【階段一】開始處理歷史影片補發（比對 processed_videos.txt 避免重複）...", flush=True)
-    history_list = list(history_video_ids)
-    
-    # 這裡我們反轉或循序處理歷史清單
-    for v_id in history_list:
-        if v_id in processed_video_ids:
-            continue # 已經上傳過的直接跳過
-            
-        # 我們需要知道這個歷史影片屬於哪位主播（透過爬蟲或事先對應）
-        # 為了安全且精準，我們在常態檢查時會一併涵蓋，或者逐一檢查每位主播的抓取結果
-        break # 實際執行時，我們會讓每位主播在抓取時自動比對並補發
-
-    # 3. 【階段二】全面巡檢 1317 位主播：自動補發歷史未上傳的影片 + 監控新影片
-    print(f"\n📌 【階段二】開始全面巡檢 1,317 位主播（歷史補發 + 即時監控）...", flush=True)
+    # 2. 全面巡檢 1317 位主播：自動補發歷史未上傳的影片 + 監控新影片
+    print(f"\n📌 開始全面巡檢 1,317 位主播（歷史補發 + 即時監控）...", flush=True)
     
     for streamer in accounts:
         thread_id = topics_map.get(streamer)
@@ -326,11 +323,11 @@ async def main():
         print(f"▶️ 檢查主播: @{streamer}", flush=True)
         ids = fetch_streamer_video_ids(streamer)
         
-        # 找出所有「還沒被 processed_videos.txt 記錄過」的影片（包含歷史舊影片與全新影片）
+        # 找出所有「還沒被 processed_videos.txt 記錄過」的影片
         unprocessed_ids = [v_id for v_id in ids if v_id not in processed_video_ids]
 
         if unprocessed_ids:
-            print(f"✨ 發現 @{streamer} 有 {len(unprocessed_ids)} 個未上傳影片（含歷史/新影片），開始下載並上傳...", flush=True)
+            print(f"✨ 發現 @{streamer} 有 {len(unprocessed_ids)} 個未上傳影片，開始下載並上傳...", flush=True)
             for v_id in reversed(unprocessed_ids):
                 success = await download_and_send_video(bot, thread_id, streamer, v_id)
                 if success:
